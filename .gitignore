@@ -1,0 +1,29 @@
+# Build output
+/bin/
+/noise-detection
+/noise-detection.exe
+*.exe
+*.exe~
+*.test
+*.out
+
+# Go tooling artifacts
+*.prof
+coverage.*
+
+# Local environment (never commit credentials)
+.env
+.env.*
+
+# Project-local agent notes kept off the remote
+AGENTS.md
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# docs
+docs/*
