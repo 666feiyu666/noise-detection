@@ -69,6 +69,7 @@ func (p *Pipeline) Run(ctx context.Context, in report.Input) (report.Report, err
 	model := assessment.Model
 	promptVersion := assessment.PromptVersion
 	duration := assessment.DurationSeconds
+	observations := assessment.SignalObservations
 
 	// Hybrid mode: fuse the verifier's findings with the primary detector's.
 	if p.cfg.Verifier != nil {
@@ -82,6 +83,7 @@ func (p *Pipeline) Run(ctx context.Context, in report.Input) (report.Report, err
 		findings = Fuse(findings, second.Findings, sourceOf(p.cfg.Detector), sourceOf(p.cfg.Verifier))
 		model = join(model, second.Model)
 		promptVersion = join(promptVersion, second.PromptVersion)
+		observations = append(observations, second.SignalObservations...)
 	}
 
 	// A detector may report the duration it observed; use it only when the
@@ -104,6 +106,7 @@ func (p *Pipeline) Run(ctx context.Context, in report.Input) (report.Report, err
 		HasDefect:                report.Bool(hasDefect),
 		Defects:                  nonNil(findings),
 		TimestampsAreApproximate: true,
+		SignalObservations:       observations,
 		ShouldRegenerate:         outcome.ShouldRegenerate,
 		Decision:                 outcome.Decision,
 		Reason:                   outcome.Reason,

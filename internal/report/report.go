@@ -60,6 +60,33 @@ const (
 	StatusSuspected   = "suspected"   // Gemini-only perceptual defect
 )
 
+// Severity and confidence values for perceptual (timbre) findings. Severity and
+// confidence are distinct: severity describes how audible or impactful the
+// problem is, confidence describes how sure the assessment is. Neither is a
+// calibrated probability.
+const (
+	SeverityLow    = "low"
+	SeverityMedium = "medium"
+	SeverityHigh   = "high"
+
+	ConfidenceLow    = "low"
+	ConfidenceMedium = "medium"
+	ConfidenceHigh   = "high"
+)
+
+// SignalObservation is a numeric signal measurement attached to an assessment
+// as supporting evidence, for example a spectral or onset-envelope statistic.
+//
+// An observation is context, not a verdict: it is never, by itself, grounds
+// for rejection, and it is deliberately kept out of the defect list so it
+// cannot trigger a decision on its own.
+type SignalObservation struct {
+	Name  string  `json:"name"`
+	Value float64 `json:"value"`
+	Unit  string  `json:"unit,omitempty"`
+	Note  string  `json:"note,omitempty"`
+}
+
 // Finding is one located, audible defect. Times are seconds from the start of
 // the original file and are estimates, not sample-accurate measurements.
 //
@@ -73,6 +100,14 @@ type Finding struct {
 	Description  string  `json:"description"`
 	Source       string  `json:"source,omitempty"`
 	Status       string  `json:"status,omitempty"`
+	// Dimension names the perceptual quality the finding concerns (for
+	// example "muffling", "loss_of_transients", "harshness"). It is set for
+	// timbre findings and left empty for purely signal-level defects.
+	Dimension string `json:"dimension,omitempty"`
+	// Severity and Confidence describe how audible the problem is and how
+	// certain the assessment is. They are distinct from one another.
+	Severity   string `json:"severity,omitempty"`
+	Confidence string `json:"confidence,omitempty"`
 }
 
 // Assessment is what a Detector returns before the response is validated and a
@@ -81,6 +116,10 @@ type Assessment struct {
 	Findings      []Finding
 	Model         string
 	PromptVersion string
+	// SignalObservations carries supporting numeric measurements (for example
+	// spectral balance and onset-envelope statistics). Observations inform a
+	// human or model reviewer but never trigger a decision by themselves.
+	SignalObservations []SignalObservation
 	// DurationSeconds is optional metadata a Detector may report (for example,
 	// the model's estimate of the recording length). When the caller did not
 	// supply a duration, the pipeline uses this value for timestamp validation
@@ -99,6 +138,10 @@ type Report struct {
 	HasDefect                *bool     `json:"has_defect"`
 	Defects                  []Finding `json:"defects"`
 	TimestampsAreApproximate bool      `json:"timestamps_are_approximate"`
+	// SignalObservations are supporting numeric measurements (spectral
+	// balance, onset-envelope statistics). They are evidence, not verdicts:
+	// they never appear in Defects and never drive the decision on their own.
+	SignalObservations []SignalObservation `json:"signal_observations,omitempty"`
 	ShouldRegenerate         *bool     `json:"should_regenerate"`
 	Decision                 string    `json:"decision"`
 	Reason                   string    `json:"reason"`

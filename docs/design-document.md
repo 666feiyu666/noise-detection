@@ -32,21 +32,24 @@ DSP analysis                  LLM analysis
 | Module | Package | Responsibility |
 |---|---|---|
 | Preprocessing | `internal/audio` | validate input; ffprobe metadata; ffmpeg PCM decode |
-| DSP | `internal/detector` | clipping, silence/dropout, transients, channel balance |
-| LLM | `internal/gemini` | Gemini assessment via `google.golang.org/genai` (Files API, structured JSON) |
-| Fusion | `internal/fusion` | orchestrate stages, fuse DSP + LLM evidence, compute the decision |
-| Report | `internal/report` | the JSON contract; findings carry `source` and `status` |
+| DSP | `internal/detector` | clipping, silence/dropout, click/pop bursts, channel balance; spectral-balance and onset-envelope observations |
+| LLM | `internal/gemini` | Gemini assessment via `google.golang.org/genai` (Files API, structured JSON), including timbre/perceptual dimensions |
+| Fusion | `internal/fusion` | orchestrate stages, fuse DSP + LLM evidence, carry observations, compute the decision |
+| Report | `internal/report` | the JSON contract; findings carry `source`, `status`, `dimension`, `severity`, `confidence`; reports carry `signal_observations` |
 
 ## Pipeline
 
 1. **Preprocess** — validate the file; read metadata with ffprobe; decode to
    interleaved float32 PCM with ffmpeg.
 2. **DSP** — flag candidate anomalies from signal statistics (thresholds give
-   *candidates*, not verdicts).
-3. **LLM** — assess the whole recording with Gemini: audible clicks/pops, harsh
-   digital noise, dropouts, abrupt discontinuities. Ignore genre, mood, normal
-   percussion, and declared intentional effects. Return `type`, `start`, `end`,
-   `description`.
+   *candidates*, not verdicts), and attach spectral-balance and onset-envelope
+   measurements as `signal_observations` (evidence, never a verdict).
+3. **LLM** — assess the whole recording with Gemini for audible clicks/pops,
+   harsh digital noise, dropouts, and abrupt discontinuities, and for timbre
+   and perceptual quality (dullness, muffling, loss of clarity, loss of
+   transients, smearing, harshness, distortion, codec artifacts). Ignore genre,
+   mood, normal percussion, and declared intentional effects. Return `type`,
+   `start`, `end`, `dimension`, `description`, `severity`, `confidence`.
 4. **Fuse** — merge DSP candidates and LLM findings, labelling each by source
    and confidence, then compute the decision in application code.
 
@@ -84,6 +87,7 @@ noise-detection/
 
 ```bash
 # detectors: rule (default, local placeholder), dsp, gemini, hybrid
+# with no -report, each run writes reports/runN/report.json (N auto-increments)
 inspector -request-id <id> -audio in.mp3 -detector dsp     [-report out.json]
 inspector -request-id <id> -audio in.mp3 -detector gemini  [-report out.json]
 inspector -request-id <id> -audio in.mp3 -detector hybrid  [-report out.json]   # DSP + Gemini fusion
@@ -108,20 +112,37 @@ recorded in every report.
       "description": "Sustained near-full-scale samples indicate clipping.",
       "source": "both",
       "status": "confirmed"
+    },
+    {
+      "type": "click_pop",
+      "dimension": "click_pop",
+      "start_seconds": 116.22,
+      "end_seconds": 116.24,
+      "description": "A cluster of abrupt waveform discontinuities suggests a click or pop.",
+      "source": "dsp",
+      "status": "unconfirmed",
+      "severity": "medium",
+      "confidence": "low"
     }
   ],
   "timestamps_are_approximate": true,
+  "signal_observations": [
+    {"name": "spectral_centroid_hz", "value": 660.5, "unit": "Hz"},
+    {"name": "high_band_energy_db", "value": -36.9, "unit": "dB"}
+  ],
   "decision": "regenerate",
   "reason": "An audible defect was detected; another attempt is allowed.",
   "audio_filename": "sample.mp3",
   "duration_seconds": 141.5,
   "model": "dsp+gemini-3.8-flash",
-  "prompt_version": "dsp-v1+gemini-audio-v1",
+  "prompt_version": "dsp-v2+gemini-audio-v2",
   "assessed_at": "2026-01-01T00:00:00Z"
 }
 ```
 
 - `source` ∈ `dsp` | `gemini` | `both`; `status` ∈ `confirmed` | `unconfirmed` | `suspected`.
+- Timbre findings also carry `dimension` (`dullness` | `muffling` | `loss_of_clarity` | `loss_of_transients` | `smearing` | `harshness` | `distortion` | `codec_artifacts` | an artifact type) plus `severity` and `confidence` (each `low` | `medium` | `high`); severity and confidence are distinct.
+- `signal_observations` are supporting numeric measurements; they never appear in `defects` and never drive a decision on their own.
 - A defect interval satisfies `0 <= start_seconds < end_seconds <= duration_seconds`.
 - Error reports set `has_defect: null` and `decision: "error"`.
 - LLM timestamps are approximate, not sample-accurate; DSP timestamps are exact

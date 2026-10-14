@@ -27,7 +27,10 @@ type DSPThresholds struct {
 	SilenceLevel     float64 // window RMS below this counts as silent
 	SilenceWindowSec float64 // analysis window for silence
 	MinSilenceSec    float64 // shortest silent run reported
-	TransientDelta   float64 // |x[n]-x[n-1]| above this counts as a discontinuity
+	TransientDelta   float64 // |x[n]-x[n-1]| above this counts as an isolated discontinuity
+	BurstDelta       float64 // |x[n]-x[n-1]| above this is a moderate jump that may cluster
+	BurstWindowSec   float64 // half-window (s) searched around a sample for a jump cluster
+	BurstMinHits     int     // moderate jumps within the window that make a burst a click/pop
 	MinImbalanceDB   float64 // minimum channel RMS difference reported
 }
 
@@ -41,6 +44,9 @@ func DefaultDSPThresholds() DSPThresholds {
 		SilenceWindowSec: 0.02,
 		MinSilenceSec:    0.5,
 		TransientDelta:   0.8,
+		BurstDelta:       0.35,
+		BurstWindowSec:   0.02,
+		BurstMinHits:     5,
 		MinImbalanceDB:   6,
 	}
 }
@@ -48,7 +54,7 @@ func DefaultDSPThresholds() DSPThresholds {
 // DSPModel and DSPPromptVersion identify this detector in reports.
 const (
 	DSPModel         = "dsp"
-	DSPPromptVersion = "dsp-v1"
+	DSPPromptVersion = "dsp-v2"
 )
 
 // DSPDetector flags candidate anomalies from decoded PCM.
@@ -105,10 +111,11 @@ func (d *DSPDetector) Detect(ctx context.Context, in report.Input) (report.Asses
 		dur = &duration
 	}
 	return report.Assessment{
-		Findings:        findings,
-		Model:           DSPModel,
-		PromptVersion:   DSPPromptVersion,
-		DurationSeconds: dur,
+		Findings:           findings,
+		Model:              DSPModel,
+		PromptVersion:      DSPPromptVersion,
+		DurationSeconds:    dur,
+		SignalObservations: AnalyzeTimbre(pcm, duration),
 	}, nil
 }
 
@@ -217,21 +224,58 @@ func detectTransients(samples []float32, channels, rate int, duration float64, t
 	if gap < 1 {
 		gap = 1
 	}
+	win := int(th.BurstWindowSec * float64(rate))
+	if win < 1 {
+		win = 1
+	}
+	minHits := th.BurstMinHits
+	if minHits < 2 {
+		minHits = 2
+	}
+
 	var findings []report.Finding
 	for _, ch := range deinterleave(samples, channels) {
-		var hits []int
+		// Per-sample jump magnitude, plus a prefix count of moderate jumps so a
+		// sliding window's jump density can be read in O(1).
+		diffs := make([]float64, len(ch))
+		pref := make([]int, len(ch)+1)
 		for i := 1; i < len(ch); i++ {
-			if math.Abs(float64(ch[i]-ch[i-1])) >= th.TransientDelta {
-				hits = append(hits, i)
+			diffs[i] = math.Abs(float64(ch[i] - ch[i-1]))
+			pref[i+1] = pref[i]
+			if diffs[i] >= th.BurstDelta {
+				pref[i+1]++
 			}
 		}
+
+		var hits []int
+		for i := 1; i < len(ch); i++ {
+			switch {
+			case diffs[i] >= th.TransientDelta:
+				// A single jump this large is a discontinuity on its own.
+				hits = append(hits, i)
+			case diffs[i] >= th.BurstDelta:
+				// A moderate jump counts only inside a dense cluster, which
+				// distinguishes a click/pop burst from a normal attack.
+				lo, hi := i-win, i+win
+				if lo < 1 {
+					lo = 1
+				}
+				if hi > len(ch) {
+					hi = len(ch)
+				}
+				if pref[hi]-pref[lo] >= minHits {
+					hits = append(hits, i)
+				}
+			}
+		}
+
 		for i := 0; i < len(hits); {
 			j := i
 			for j+1 < len(hits) && hits[j+1]-hits[j] <= gap {
 				j++
 			}
 			findings = append(findings, frameFinding(hits[i]-1, hits[j], rate, duration, 0.002,
-				"click_pop", "An abrupt waveform discontinuity suggests a click or pop."))
+				"click_pop", "A cluster of abrupt waveform discontinuities suggests a click or pop."))
 			i = j + 1
 		}
 	}

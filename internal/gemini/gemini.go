@@ -35,7 +35,7 @@ const (
 const DefaultGeminiModel = "gemini-3.8-flash"
 
 // GeminiPromptVersion identifies the assessment prompt in reports.
-const GeminiPromptVersion = "gemini-audio-v1"
+const GeminiPromptVersion = "gemini-audio-v4"
 
 // Default polling and retry bounds.
 const (
@@ -278,7 +278,10 @@ type geminiFinding struct {
 	StartSeconds float64 `json:"start_seconds"`
 	EndSeconds   float64 `json:"end_seconds"`
 	Type         string  `json:"type"`
+	Dimension    string  `json:"dimension"`
 	Description  string  `json:"description"`
+	Severity     string  `json:"severity"`
+	Confidence   string  `json:"confidence"`
 }
 
 // findings converts the model output to contract findings, rejecting the
@@ -297,27 +300,52 @@ func (r geminiResult) findings() ([]report.Finding, error) {
 			EndSeconds:   f.EndSeconds,
 			Type:         f.Type,
 			Description:  f.Description,
+			Dimension:    f.Dimension,
+			Severity:     f.Severity,
+			Confidence:   f.Confidence,
 		})
 	}
 	return findings, nil
 }
 
-const systemInstruction = "You are an expert audio-quality inspector for generated music. " +
-	"You report only clearly audible, unintended defects and never comment on artistic intent."
+const systemInstruction = "You are a devoted music lover and high-end audio listener with an exceptionally critical ear. " +
+	"You care above all about timbre and sound quality: faithful, refined tone delights you, while dull, veiled, " +
+	"coarse, smeared, or degraded timbre bothers you immediately and you hold every recording to that standard. " +
+	"You report clearly audible, unintended problems, including timbre and perceptual quality, " +
+	"and never comment on artistic intent or musical taste; your high standards concern sound quality alone, " +
+	"never genre, melody, harmony, or mood."
 
 // buildPrompt assembles the assessment prompt for one candidate.
 func buildPrompt(in report.Input) string {
 	var b strings.Builder
-	b.WriteString("Inspect the ENTIRE recording (the attached audio file) for clearly audible, unintended defects. ")
-	b.WriteString("Look specifically for: isolated clicks or pops, harsh digital noise, broken or corrupted sound, ")
+	b.WriteString("Listen to the attached recording the way a demanding, timbre-obsessed listener would: ")
+	b.WriteString("you hold a high standard for tone, care about colour, clarity, and texture, ")
+	b.WriteString("and you notice at once when the sound is dull, veiled, coarse, smeared, or otherwise less than clean.\n\n")
+	b.WriteString("Inspect the ENTIRE recording (the attached audio file) for clearly audible, unintended problems. ")
+	b.WriteString("Look for isolated clicks or pops, harsh digital noise, broken or corrupted sound, ")
 	b.WriteString("unnatural dropouts, and abrupt audio discontinuities.\n\n")
+	b.WriteString("Also assess timbre and perceptual quality across the passage, not only isolated artifacts. ")
+	b.WriteString("Consider these overlapping dimensions: dullness (missing upper-frequency detail relative to an appropriate comparison); ")
+	b.WriteString("muffling (a veiled quality, as though the sound passes through a barrier); loss of clarity (reduced note definition or separation); ")
+	b.WriteString("loss of transients (weakened attack detail); smearing (blurred attacks that make successive sounds less distinct); ")
+	b.WriteString("harshness (unnaturally abrasive or piercing sound); distortion (breakup, roughness, or added tonal components); ")
+	b.WriteString("and suspected compression artifacts (warbling, metallic texture, or blurred detail possibly from lossy encoding).\n\n")
+	b.WriteString("State what you hear before suggesting any cause. A listening judgment alone must not assert that a codec, processing stage, or model caused the problem. ")
 	b.WriteString("Do NOT judge genre, melody, harmony, mood, or personal preference. ")
 	b.WriteString("Do NOT flag normal percussion transients, jazz dissonance, intentional pauses, ")
 	b.WriteString("or deliberate production effects merely because they sound unusual. ")
-	b.WriteString("Report only clearly supported defects; an ambiguous sound alone is not a defect.\n\n")
-	b.WriteString("For each defect return a start time, an end time, a defect type, and a short description of the audible evidence. ")
+	b.WriteString("A problem that spans the whole recording is a valid finding: use the full interval when it is not localized.\n\n")
+	b.WriteString("Trust your ear above all: if any part of the sound makes the listening experience unpleasant — ")
+	b.WriteString("grating, harsh, tiring, dull, veiled, muddy, smeared, thin, or otherwise uncomfortable to the ear — report it, ")
+	b.WriteString("even when you are unsure of the cause or whether it is objectively a defect. ")
+	b.WriteString("Do not withhold a finding merely because it is subtle, ambiguous, or you cannot prove it; ")
+	b.WriteString("an unpleasant timbre alone is a valid reason to report.\n\n")
+	b.WriteString("For each finding return: a start and end time, a defect type, the perceptual dimension it concerns ")
+	b.WriteString("(click_pop, digital_noise, dropout, dullness, muffling, loss_of_clarity, loss_of_transients, smearing, harshness, distortion, or codec_artifacts), ")
+	b.WriteString("a short description of the audible evidence, a severity (low, medium, or high), and a confidence (low, medium, or high). ")
+	b.WriteString("Severity and confidence are separate: severity is how audible or impactful the problem is, confidence is how sure you are. ")
 	b.WriteString("Times are seconds from the beginning of the original file, including any leading silence; they are estimates, not sample-accurate. ")
-	b.WriteString("Set has_defect to false and return an empty defects list when no clear defect is present. ")
+	b.WriteString("Set has_defect to false and return an empty defects list when no clearly supported problem is present. ")
 	b.WriteString("Also report duration_seconds, your best estimate of the recording length in seconds.\n")
 	if in.IntentionalEffects != "" {
 		fmt.Fprintf(&b, "\nThe creator declared these intentional effects; do not treat them as defects: %s\n", in.IntentionalEffects)
@@ -332,7 +360,7 @@ func responseSchema() *genai.Schema {
 		Properties: map[string]*genai.Schema{
 			"has_defect": {
 				Type:        genai.TypeBoolean,
-				Description: "True only if at least one clearly audible, unintended defect is present.",
+				Description: "True if any part of the sound is unpleasant or uncomfortable to the ear, even if subtle or hard to attribute.",
 			},
 			"duration_seconds": {
 				Type:        genai.TypeNumber,
@@ -344,12 +372,15 @@ func responseSchema() *genai.Schema {
 				Items: &genai.Schema{
 					Type: genai.TypeObject,
 					Properties: map[string]*genai.Schema{
-						"start_seconds": {Type: genai.TypeNumber, Description: "Estimated defect start in seconds from the file start."},
-						"end_seconds":   {Type: genai.TypeNumber, Description: "Estimated defect end in seconds from the file start."},
-						"type":          {Type: genai.TypeString, Description: "Short defect category, e.g. click_pop, digital_noise, dropout."},
-						"description":   {Type: genai.TypeString, Description: "Short description of the audible evidence."},
+						"start_seconds": {Type: genai.TypeNumber, Description: "Estimated problem start in seconds from the file start."},
+						"end_seconds":   {Type: genai.TypeNumber, Description: "Estimated problem end in seconds from the file start."},
+						"type":          {Type: genai.TypeString, Description: "Short category, e.g. click_pop, digital_noise, dropout, muffling, harshness."},
+						"dimension":     {Type: genai.TypeString, Description: "Perceptual dimension: dullness, muffling, loss_of_clarity, loss_of_transients, smearing, harshness, distortion, codec_artifacts, or an artifact type such as click_pop."},
+						"description":   {Type: genai.TypeString, Description: "Short description of the audible evidence, stating what is heard."},
+						"severity":      {Type: genai.TypeString, Enum: []string{"low", "medium", "high"}, Description: "How audible or impactful the problem is."},
+						"confidence":    {Type: genai.TypeString, Enum: []string{"low", "medium", "high"}, Description: "How certain the audible assessment is; not a probability."},
 					},
-					Required: []string{"start_seconds", "end_seconds", "type", "description"},
+					Required: []string{"start_seconds", "end_seconds", "type", "dimension", "description", "severity", "confidence"},
 				},
 			},
 		},
