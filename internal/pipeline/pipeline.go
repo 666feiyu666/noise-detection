@@ -59,6 +59,12 @@ func (p *Pipeline) Run(ctx context.Context, in contract.Input) (contract.Report,
 		return p.errorReport(in, err), err
 	}
 
+	// A detector may report the duration it observed; use it only when the
+	// caller supplied none, so caller metadata always wins.
+	if in.DurationSeconds == nil {
+		in.DurationSeconds = assessment.DurationSeconds
+	}
+
 	if err := validate.Findings(assessment.Findings, in.DurationSeconds); err != nil {
 		return p.errorReport(in, err), err
 	}

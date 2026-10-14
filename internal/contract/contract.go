@@ -60,6 +60,11 @@ type Assessment struct {
 	Findings      []Finding
 	Model         string
 	PromptVersion string
+	// DurationSeconds is optional metadata a Detector may report (for example,
+	// the model's estimate of the recording length). When the caller did not
+	// supply a duration, the pipeline uses this value for timestamp validation
+	// and the report.
+	DurationSeconds *float64
 }
 
 // Report is the machine-readable assessment result returned to the caller.

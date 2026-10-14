@@ -32,18 +32,18 @@ func run() error {
 		effects       = flag.String("intentional-effects", "", "optional description of deliberate effects")
 		reportPath    = flag.String("report", "", "optional JSON report destination; stdout when empty")
 		rulesPath     = flag.String("rules", "", "optional path to a JSON rules file for the local rule detector")
+		detectorName  = flag.String("detector", "rule", "detector to use: rule (local) or gemini (model-backed)")
+		geminiModel   = flag.String("gemini-model", "", "Gemini model id; overrides GEMINI_MODEL and the default")
 		skipFileCheck = flag.Bool("skip-file-check", false, "do not require the audio file to exist")
 		maxAttempts   = flag.Int("max-attempts", contract.MaxGenerationAttempt, "generation limit")
 	)
 	flag.Parse()
 
-	var detector detect.Detector = detect.NewRuleDetector()
-	if *rulesPath != "" {
-		d, err := detect.NewRuleDetectorFromFile(*rulesPath)
-		if err != nil {
-			return err
-		}
-		detector = d
+	ctx := context.Background()
+
+	detector, err := buildDetector(ctx, *detectorName, *rulesPath, *geminiModel)
+	if err != nil {
+		return err
 	}
 
 	p := pipeline.New(pipeline.Config{
@@ -60,7 +60,7 @@ func run() error {
 		ReportPath:         *reportPath,
 	}
 
-	report, runErr := p.Run(context.Background(), in)
+	report, runErr := p.Run(ctx, in)
 	if err := writeReport(report, *reportPath); err != nil {
 		return err
 	}
@@ -68,6 +68,21 @@ func run() error {
 		return fmt.Errorf("assessment reported an error: %w", runErr)
 	}
 	return nil
+}
+
+// buildDetector selects the detector named on the command line.
+func buildDetector(ctx context.Context, name, rulesPath, geminiModel string) (detect.Detector, error) {
+	switch name {
+	case "", "rule":
+		if rulesPath != "" {
+			return detect.NewRuleDetectorFromFile(rulesPath)
+		}
+		return detect.NewRuleDetector(), nil
+	case "gemini":
+		return detect.NewGeminiDetector(ctx, detect.GeminiConfig{Model: geminiModel})
+	default:
+		return nil, fmt.Errorf("unknown detector %q: use rule or gemini", name)
+	}
 }
 
 func writeReport(r contract.Report, path string) error {
