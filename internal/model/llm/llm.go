@@ -1,12 +1,11 @@
-// Package gemini implements a Gemini-backed Detector.
+// Package llm is the model-backed method of the modeling layer: it asks Google's
+// Gemini to inspect the whole recording for clearly audible, unintended defects.
 //
-// This detector uploads the candidate recording through Google's Files API,
-// asks Gemini to inspect the whole recording for clearly audible, unintended
-// defects, and returns the model's structured findings. It implements the
-// detector.Detector interface so the pipeline is unchanged: decisions are still
-// computed in application code, and any API or parsing failure surfaces as an
-// error report rather than a clean result.
-package gemini
+// It is one model among peers. It receives the features prepared by the
+// data-preparation layer as context, and returns the model's structured
+// findings; decisions are still computed in application code, and any API or
+// parsing failure surfaces as an error report rather than a clean result.
+package llm
 
 import (
 	"context"
@@ -20,10 +19,11 @@ import (
 
 	"google.golang.org/genai"
 
+	"github.com/666feiyu666/noise-detection/internal/features"
 	"github.com/666feiyu666/noise-detection/internal/report"
 )
 
-// Environment variables the Gemini detector reads.
+// Environment variables the Gemini model reads.
 const (
 	EnvAPIKey = "GEMINI_API_KEY"
 	EnvModel  = "GEMINI_MODEL"
@@ -34,8 +34,8 @@ const (
 // new API keys; the API now points to this model.)
 const DefaultGeminiModel = "gemini-3.8-flash"
 
-// GeminiPromptVersion identifies the assessment prompt in reports.
-const GeminiPromptVersion = "gemini-audio-v4"
+// PromptVersion identifies the assessment prompt in reports.
+const PromptVersion = "gemini-audio-v5"
 
 // Default polling and retry bounds.
 const (
@@ -44,8 +44,8 @@ const (
 	defaultMaxRetries   = 2
 )
 
-// GeminiConfig configures a GeminiDetector.
-type GeminiConfig struct {
+// Config configures a Gemini model.
+type Config struct {
 	// APIKey overrides the GEMINI_API_KEY environment variable.
 	APIKey string
 	// Model overrides the GEMINI_MODEL environment variable and the default.
@@ -62,8 +62,8 @@ type GeminiConfig struct {
 	MaxRetries int
 }
 
-// GeminiDetector assesses a recording with Google's Gemini API.
-type GeminiDetector struct {
+// Gemini assesses a recording with Google's Gemini API.
+type Gemini struct {
 	client       *genai.Client
 	model        string
 	pollInterval time.Duration
@@ -71,8 +71,8 @@ type GeminiDetector struct {
 	maxRetries   int
 }
 
-// NewGeminiDetector resolves configuration and returns a ready detector.
-func NewGeminiDetector(ctx context.Context, cfg GeminiConfig) (*GeminiDetector, error) {
+// NewGemini resolves configuration and returns a ready model.
+func NewGemini(ctx context.Context, cfg Config) (*Gemini, error) {
 	model := firstNonEmpty(cfg.Model, os.Getenv(EnvModel), DefaultGeminiModel)
 
 	if cfg.PollInterval <= 0 {
@@ -92,7 +92,7 @@ func NewGeminiDetector(ctx context.Context, cfg GeminiConfig) (*GeminiDetector, 
 	if client == nil {
 		apiKey := firstNonEmpty(cfg.APIKey, os.Getenv(EnvAPIKey))
 		if apiKey == "" {
-			return nil, fmt.Errorf("no API key: set %s or GeminiConfig.APIKey", EnvAPIKey)
+			return nil, fmt.Errorf("no API key: set %s or Config.APIKey", EnvAPIKey)
 		}
 		c, err := genai.NewClient(ctx, &genai.ClientConfig{
 			APIKey:  apiKey,
@@ -104,7 +104,7 @@ func NewGeminiDetector(ctx context.Context, cfg GeminiConfig) (*GeminiDetector, 
 		client = c
 	}
 
-	return &GeminiDetector{
+	return &Gemini{
 		client:       client,
 		model:        model,
 		pollInterval: cfg.PollInterval,
@@ -113,15 +113,15 @@ func NewGeminiDetector(ctx context.Context, cfg GeminiConfig) (*GeminiDetector, 
 	}, nil
 }
 
-// Name implements Detector.
-func (d *GeminiDetector) Name() string { return d.model }
+// Name implements model.Model.
+func (d *Gemini) Name() string { return d.model }
 
-// Source implements detector.Sourced.
-func (d *GeminiDetector) Source() string { return report.SourceGemini }
+// Source implements model.Model.
+func (d *Gemini) Source() string { return report.SourceGemini }
 
-// Detect implements Detector by uploading the file, assessing it, and parsing
-// the structured response.
-func (d *GeminiDetector) Detect(ctx context.Context, in report.Input) (report.Assessment, error) {
+// Predict implements model.Model by uploading the file, assessing it with the
+// prepared features as context, and parsing the structured response.
+func (d *Gemini) Predict(ctx context.Context, in report.Input, prepared features.Set) (report.Assessment, error) {
 	mimeType, err := audioMIMEType(in.AudioPath)
 	if err != nil {
 		return report.Assessment{}, err
@@ -140,7 +140,7 @@ func (d *GeminiDetector) Detect(ctx context.Context, in report.Input) (report.As
 		return report.Assessment{}, err
 	}
 
-	result, err := d.assess(ctx, uploaded, in)
+	result, err := d.assess(ctx, uploaded, in, prepared)
 	if err != nil {
 		return report.Assessment{}, err
 	}
@@ -158,13 +158,13 @@ func (d *GeminiDetector) Detect(ctx context.Context, in report.Input) (report.As
 	return report.Assessment{
 		Findings:        findings,
 		Model:           d.model,
-		PromptVersion:   GeminiPromptVersion,
+		PromptVersion:   PromptVersion,
 		DurationSeconds: duration,
 	}, nil
 }
 
 // upload sends the recording through the Files API, retrying transient errors.
-func (d *GeminiDetector) upload(ctx context.Context, path, mimeType string) (*genai.File, error) {
+func (d *Gemini) upload(ctx context.Context, path, mimeType string) (*genai.File, error) {
 	var file *genai.File
 	err := d.withRetry(ctx, "upload", func() error {
 		f, err := d.client.Files.UploadFromPath(ctx, path, &genai.UploadFileConfig{MIMEType: mimeType})
@@ -181,7 +181,7 @@ func (d *GeminiDetector) upload(ctx context.Context, path, mimeType string) (*ge
 }
 
 // waitActive polls until the uploaded file reaches the ACTIVE state.
-func (d *GeminiDetector) waitActive(ctx context.Context, file *genai.File) error {
+func (d *Gemini) waitActive(ctx context.Context, file *genai.File) error {
 	deadline := time.Now().Add(d.maxWait)
 	for {
 		switch file.State {
@@ -208,7 +208,7 @@ func (d *GeminiDetector) waitActive(ctx context.Context, file *genai.File) error
 
 // assess sends the complete recording with the assessment prompt and response
 // schema, and parses the model's structured output.
-func (d *GeminiDetector) assess(ctx context.Context, file *genai.File, in report.Input) (geminiResult, error) {
+func (d *Gemini) assess(ctx context.Context, file *genai.File, in report.Input, prepared features.Set) (geminiResult, error) {
 	var result geminiResult
 
 	err := d.withRetry(ctx, "generateContent", func() error {
@@ -216,7 +216,7 @@ func (d *GeminiDetector) assess(ctx context.Context, file *genai.File, in report
 			Role: genai.RoleUser,
 			Parts: []*genai.Part{
 				{FileData: &genai.FileData{FileURI: file.URI, MIMEType: file.MIMEType}},
-				{Text: buildPrompt(in)},
+				{Text: buildPrompt(in, prepared)},
 			},
 		}}, &genai.GenerateContentConfig{
 			SystemInstruction: &genai.Content{Parts: []*genai.Part{{Text: systemInstruction}}},
@@ -245,7 +245,7 @@ func (d *GeminiDetector) assess(ctx context.Context, file *genai.File, in report
 }
 
 // withRetry runs op, retrying only failures that look transient.
-func (d *GeminiDetector) withRetry(ctx context.Context, label string, op func() error) error {
+func (d *Gemini) withRetry(ctx context.Context, label string, op func() error) error {
 	var lastErr error
 	for attempt := 0; attempt <= d.maxRetries; attempt++ {
 		if attempt > 0 {
@@ -315,8 +315,9 @@ const systemInstruction = "You are a devoted music lover and high-end audio list
 	"and never comment on artistic intent or musical taste; your high standards concern sound quality alone, " +
 	"never genre, melody, harmony, or mood."
 
-// buildPrompt assembles the assessment prompt for one candidate.
-func buildPrompt(in report.Input) string {
+// buildPrompt assembles the assessment prompt for one candidate, including the
+// deterministic features prepared upstream as context.
+func buildPrompt(in report.Input, prepared features.Set) string {
 	var b strings.Builder
 	b.WriteString("Listen to the attached recording the way a demanding, timbre-obsessed listener would: ")
 	b.WriteString("you hold a high standard for tone, care about colour, clarity, and texture, ")
@@ -347,6 +348,25 @@ func buildPrompt(in report.Input) string {
 	b.WriteString("Times are seconds from the beginning of the original file, including any leading silence; they are estimates, not sample-accurate. ")
 	b.WriteString("Set has_defect to false and return an empty defects list when no clearly supported problem is present. ")
 	b.WriteString("Also report duration_seconds, your best estimate of the recording length in seconds.\n")
+
+	// Deterministic context from the data-preparation layer. It is evidence to
+	// weigh, not a verdict to copy.
+	if len(prepared.Metrics) > 0 {
+		b.WriteString("\nLocal signal measurements taken over the recording (context only; a reading is not a defect by itself):\n")
+		for _, m := range prepared.Metrics {
+			fmt.Fprintf(&b, "- %s = %.3f %s", m.Name, m.Value, m.Unit)
+			if m.Note != "" {
+				fmt.Fprintf(&b, " (%s)", m.Note)
+			}
+			b.WriteString("\n")
+		}
+	}
+	if len(prepared.Candidates) > 0 {
+		b.WriteString("Deterministic signal candidates found by local analysis (each may be a false positive; confirm or dismiss them by ear):\n")
+		for _, c := range prepared.Candidates {
+			fmt.Fprintf(&b, "- %.2f-%.2fs %s: %s\n", c.StartSeconds, c.EndSeconds, c.Type, c.Description)
+		}
+	}
 	if in.IntentionalEffects != "" {
 		fmt.Fprintf(&b, "\nThe creator declared these intentional effects; do not treat them as defects: %s\n", in.IntentionalEffects)
 	}

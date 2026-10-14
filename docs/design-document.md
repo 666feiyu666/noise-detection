@@ -1,71 +1,112 @@
 # Audio Defect Detector: Technical Design
 
-**Core idea:** hybrid detection — deterministic **DSP** finds measurable
-signal anomalies; an **LLM (Gemini)** judges perceptual defects; the two are
-**fused** into one structured report. Decisions are computed in code, never by
-the model.
+**Core idea:** the project follows the CRISP-DM lifecycle. Audio is understood
+and prepared once (decode + deterministic signal features), one or more
+**models** turn those prepared features into findings, an **evaluation** layer
+aggregates the evidence and decides, and the CLI deploys the result as a JSON
+report. Decisions are computed in code, never by a model.
 
 > Aligned with the `noise-detection` repository.
 
-## Architecture
+## Layering: a base layer and the methods above it
+
+The signal layer and the judgment layer are deliberately separate:
+
+- **Base layer (Data Preparation, `internal/features`)** — pure signal work:
+  decode once, measure the signal, extract candidate anomaly intervals. It
+  produces *data*, not verdicts.
+- **Methods (Modeling, `internal/model`)** — every detection method decides what
+  the prepared data means. The deterministic **DSP** decision, a local **rule**
+  pass, a future **ML** model, and an **LLM** (Gemini) are peers here; none of
+  them re-reads the signal, and none is privileged over another.
+
+This is why DSP appears in two places: its *measurement* is the base layer, its
+*decision* is one method among the rest.
+
+## CRISP-DM phases
+
+| Phase | Artifact | Responsibility |
+|---|---|---|
+| Business Understanding | `docs/` | the objective, the report contract, and the decision policy |
+| Data Understanding | `internal/audio` | validate the caller request; probe metadata; decode to PCM |
+| **Data Preparation** | `internal/features` | decode once; measure, extract candidate intervals, build a stable feature vector |
+| **Modeling** | `internal/model` (+ `model/{rule,dsp,llm}`) | the `Model` contract, a registry, and the detection methods |
+| Evaluation | `internal/evaluation` | aggregate evidence by source, validate the response, compute the decision |
+| Deployment | `cmd/inspector`, `internal/report` | the CLI entry point and the JSON report contract |
 
 ```text
-audio input
-    |
-    v
-preprocessing ── ffprobe metadata + ffmpeg PCM decode
-    |
-    +-----------------------------+
-    |                             |
-    v                             v
-DSP analysis                  LLM analysis
-(measurable anomalies)        (perceptual defects)
-    |                             |
-    +-------------+---------------+
-                  v
-              fusion (dedup + label)
-                  |
-                  v
-           report (JSON)
+Business Understanding ── docs: contract + decision policy
+        |
+Data Understanding ────── internal/audio       validate · ffprobe · ffmpeg PCM
+        |
+Data Preparation ──────── internal/features    decode once · metrics · candidates · feature vector
+        |
+Modeling ──────────────── internal/model       rule | dsp | llm  (any combination, shared features)
+        |
+Evaluation ────────────── internal/evaluation  aggregate evidence by source · validate · decide
+        |
+Deployment ────────────── cmd/inspector + internal/report   JSON report
 ```
 
-| Module | Package | Responsibility |
-|---|---|---|
-| Preprocessing | `internal/audio` | validate input; ffprobe metadata; ffmpeg PCM decode |
-| DSP | `internal/detector` | clipping, silence/dropout, click/pop bursts, channel balance; spectral-balance and onset-envelope observations |
-| LLM | `internal/gemini` | Gemini assessment via `google.golang.org/genai` (Files API, structured JSON), including timbre/perceptual dimensions |
-| Fusion | `internal/fusion` | orchestrate stages, fuse DSP + LLM evidence, carry observations, compute the decision |
-| Report | `internal/report` | the JSON contract; findings carry `source`, `status`, `dimension`, `severity`, `confidence`; reports carry `signal_observations` |
+## Phase detail
 
-## Pipeline
+### Data Understanding (`internal/audio`)
 
-1. **Preprocess** — validate the file; read metadata with ffprobe; decode to
-   interleaved float32 PCM with ffmpeg.
-2. **DSP** — flag candidate anomalies from signal statistics (thresholds give
-   *candidates*, not verdicts), and attach spectral-balance and onset-envelope
-   measurements as `signal_observations` (evidence, never a verdict).
-3. **LLM** — assess the whole recording with Gemini for audible clicks/pops,
-   harsh digital noise, dropouts, and abrupt discontinuities, and for timbre
-   and perceptual quality (dullness, muffling, loss of clarity, loss of
-   transients, smearing, harshness, distortion, codec artifacts). Ignore genre,
-   mood, normal percussion, and declared intentional effects. Return `type`,
-   `start`, `end`, `dimension`, `description`, `severity`, `confidence`.
-4. **Fuse** — merge DSP candidates and LLM findings, labelling each by source
-   and confidence, then compute the decision in application code.
+Validate the caller request (request id, attempt, path, optional duration) and
+read the file: `ffprobe` for metadata, `ffmpeg` for interleaved float32 PCM. The
+original file is preserved; nothing is denoised, normalised, or trimmed.
 
-Fusion rule:
+### Data Preparation (`internal/features`)
 
-| DSP | LLM | Result | `status` |
+`Extract` decodes the candidate **once** and returns a `Set`:
+
+- `Metrics` — named measurements over the whole recording (spectral centroid,
+  high-band energy, onset rate, high-band segment range).
+- `Candidates` — anomalous intervals from signal statistics (clipping,
+  silence/dropout, click/pop bursts, channel imbalance). A threshold yields a
+  *candidate*, never a verdict.
+- `Vector` / `VectorNames` — a stable-order numeric representation, ready for a
+  machine-learning model.
+
+Every model consumes this one prepared `Set`; no model repeats the decode.
+
+### Modeling (`internal/model`)
+
+A model is anything implementing `model.Model`:
+
+```go
+Predict(ctx context.Context, in report.Input, prepared features.Set) (report.Assessment, error)
+```
+
+| Model | Package | Reads | Method |
 |---|---|---|---|
-| detected | detected | confirmed | `confirmed` |
-| detected | not | retain for review | `unconfirmed` |
-| not | detected | suspected perceptual defect | `suspected` |
-| not | not | no defect | — |
-| failed | any | incomplete analysis | `error` report |
+| `rule` | `internal/model/rule` | the filename | local heuristic (placeholder) |
+| `dsp` | `internal/model/dsp` | `prepared.Candidates` | deterministic: one finding per candidate |
+| `llm` | `internal/model/llm` | the audio + `prepared` features | Gemini, structured JSON (perceptual + artifact dimensions) |
 
-DSP and LLM both assess the whole recording.
+The registry maps names to factories; the CLI selects any combination by
+repeating `-detector`. Adding an ML model means implementing `Model` and
+registering a factory — the pipeline is unchanged. The LLM receives the prepared
+metrics and candidates as context, so it reasons on top of the base layer rather
+than in isolation.
 
-Decision table (in effect today):
+### Evaluation (`internal/evaluation`)
+
+Aggregate the findings into events. Overlapping findings from *different*
+sources join one event: the first source supplies its type and description and
+every observing source is recorded in `sources`; same-source findings are never
+merged. Status follows from the sources:
+
+| Sources observing the event | `status` | Meaning |
+|---|---|---|
+| two or more | `confirmed` | models agree on the event |
+| exactly one | `unconfirmed` | a single model observed it |
+| none | — | no defect |
+
+Then validate the response (`0 <= start < end <= duration`) and compute the
+decision in code.
+
+Decision table:
 
 | Condition | Decision |
 |---|---|
@@ -74,28 +115,36 @@ Decision table (in effect today):
 | defects, attempt 3 | `stop_limit_reached` |
 | invalid input / API / response | `error` |
 
+### Deployment (`cmd/inspector`, `internal/report`)
+
+The CLI runs one assessment per invocation and writes one JSON report per
+candidate into a numbered run directory.
+
+```bash
+# models: rule (default, placeholder), dsp (signal), llm (Gemini)
+# repeat -detector to run several models over the same candidate
+inspector -request-id <id> -audio in.mp3 -detector dsp                  [-report out.json]
+inspector -request-id <id> -audio in.mp3 -detector llm                  [-report out.json]
+inspector -request-id <id> -audio in.mp3 -detector dsp -detector llm    [-report out.json]
+```
+
+`GEMINI_API_KEY` comes from the environment; `GEMINI_MODEL` selects the model
+(default `gemini-3.8-flash`). Model, prompt version, and duration are recorded
+in every report.
+
 ## Project structure
 
 ```text
 noise-detection/
-├── cmd/inspector/main.go
-├── internal/{audio,detector,gemini,fusion,report}/
+├── cmd/inspector/main.go          # Deployment
+├── internal/audio/{input,probe,decode,findings}.go        # Data Understanding
+├── internal/features/{features,candidates,metrics}.go     # Data Preparation (base layer)
+├── internal/model/{model,registry}.go                     # Modeling (contract + registry)
+├── internal/model/{rule,dsp,llm}/…                        # Modeling (methods)
+├── internal/evaluation/{aggregate,decide,pipeline}.go     # Evaluation
+├── internal/report/report.go                              # contract
 └── go.mod
 ```
-
-## CLI
-
-```bash
-# detectors: rule (default, local placeholder), dsp, gemini, hybrid
-# with no -report, each run writes reports/runN/report.json (N auto-increments)
-inspector -request-id <id> -audio in.mp3 -detector dsp     [-report out.json]
-inspector -request-id <id> -audio in.mp3 -detector gemini  [-report out.json]
-inspector -request-id <id> -audio in.mp3 -detector hybrid  [-report out.json]   # DSP + Gemini fusion
-```
-
-`GEMINI_API_KEY` comes from the environment; `GEMINI_MODEL` selects the model
-(default `gemini-3.8-flash`). Model, prompt version, and ffprobe duration are
-recorded in every report.
 
 ## Output (JSON)
 
@@ -110,7 +159,7 @@ recorded in every report.
       "start_seconds": 42.10,
       "end_seconds": 42.30,
       "description": "Sustained near-full-scale samples indicate clipping.",
-      "source": "both",
+      "sources": ["dsp", "gemini"],
       "status": "confirmed"
     },
     {
@@ -119,7 +168,7 @@ recorded in every report.
       "start_seconds": 116.22,
       "end_seconds": 116.24,
       "description": "A cluster of abrupt waveform discontinuities suggests a click or pop.",
-      "source": "dsp",
+      "sources": ["dsp"],
       "status": "unconfirmed",
       "severity": "medium",
       "confidence": "low"
@@ -135,14 +184,15 @@ recorded in every report.
   "audio_filename": "sample.mp3",
   "duration_seconds": 141.5,
   "model": "dsp+gemini-3.8-flash",
-  "prompt_version": "dsp-v2+gemini-audio-v2",
+  "prompt_version": "dsp-v2+gemini-audio-v5",
   "assessed_at": "2026-01-01T00:00:00Z"
 }
 ```
 
-- `source` ∈ `dsp` | `gemini` | `both`; `status` ∈ `confirmed` | `unconfirmed` | `suspected`.
+- `sources` lists every model family (`dsp` | `gemini` | …) that observed the
+  event; `status` is `confirmed` for two or more sources and `unconfirmed` for one.
 - Timbre findings also carry `dimension` (`dullness` | `muffling` | `loss_of_clarity` | `loss_of_transients` | `smearing` | `harshness` | `distortion` | `codec_artifacts` | an artifact type) plus `severity` and `confidence` (each `low` | `medium` | `high`); severity and confidence are distinct.
-- `signal_observations` are supporting numeric measurements; they never appear in `defects` and never drive a decision on their own.
+- `signal_observations` are the prepared measurements; they never appear in `defects` and never drive a decision on their own.
 - A defect interval satisfies `0 <= start_seconds < end_seconds <= duration_seconds`.
 - Error reports set `has_defect: null` and `decision: "error"`.
 - LLM timestamps are approximate, not sample-accurate; DSP timestamps are exact
@@ -150,9 +200,12 @@ recorded in every report.
 
 ## Principles
 
-1. **DSP measures, LLM judges** — combine objective signal data with perceptual
-   assessment; never let the model compute the decision.
-2. **Evidence-based** — preserve each finding's source and confidence; an
+1. **Measure in the base layer, decide in the methods** — signal processing is
+   deterministic and shared; judgment belongs to the models.
+2. **Models measure and judge, code decides** — never let a model compute the
+   decision.
+3. **Evidence by source** — preserve each finding's sources and status; an
    ambiguous sound alone is not a defect.
-3. **Modular** — audio, detection, LLM, fusion, and reporting stay independent.
-4. **Incremental** — CLI MVP first; add infrastructure only when needed.
+4. **Pluggable models** — a model is anything implementing `model.Model`; adding
+   one registers a factory and changes no pipeline.
+5. **One pass over the data** — decode once, prepare once, share the result.

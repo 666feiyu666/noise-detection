@@ -46,18 +46,18 @@ type Input struct {
 	DurationSeconds *float64
 }
 
-// Source labels for fused findings.
+// Source labels. Each analyzer tags its evidence with the family it comes from;
+// an aggregated finding lists every source that observed the same event.
 const (
 	SourceDSP    = "dsp"
 	SourceGemini = "gemini"
-	SourceBoth   = "both"
 )
 
-// Status values for fused findings.
+// Status values for aggregated findings, derived from the sources that
+// observed an event.
 const (
-	StatusConfirmed   = "confirmed"   // DSP and Gemini agree
-	StatusUnconfirmed = "unconfirmed" // DSP candidate with no Gemini support
-	StatusSuspected   = "suspected"   // Gemini-only perceptual defect
+	StatusConfirmed   = "confirmed"   // two or more sources agree
+	StatusUnconfirmed = "unconfirmed" // a single source observed the event
 )
 
 // Severity and confidence values for perceptual (timbre) findings. Severity and
@@ -90,16 +90,18 @@ type SignalObservation struct {
 // Finding is one located, audible defect. Times are seconds from the start of
 // the original file and are estimates, not sample-accurate measurements.
 //
-// Source and Status are set when findings are fused: source is "dsp", "gemini",
-// or "both"; status is "confirmed", "unconfirmed", or "suspected". They are
-// empty for a single detector's raw output.
+// Sources and Status are set when findings from several analyzers are
+// aggregated: Sources lists every source (for example "dsp", "gemini") that
+// observed the same event, and Status is "confirmed" when two or more sources
+// agree or "unconfirmed" when only one did. They are empty for a single
+// analyzer's raw output.
 type Finding struct {
-	StartSeconds float64 `json:"start_seconds"`
-	EndSeconds   float64 `json:"end_seconds"`
-	Type         string  `json:"type"`
-	Description  string  `json:"description"`
-	Source       string  `json:"source,omitempty"`
-	Status       string  `json:"status,omitempty"`
+	StartSeconds float64  `json:"start_seconds"`
+	EndSeconds   float64  `json:"end_seconds"`
+	Type         string   `json:"type"`
+	Description  string   `json:"description"`
+	Sources      []string `json:"sources,omitempty"`
+	Status       string   `json:"status,omitempty"`
 	// Dimension names the perceptual quality the finding concerns (for
 	// example "muffling", "loss_of_transients", "harshness"). It is set for
 	// timbre findings and left empty for purely signal-level defects.
@@ -110,8 +112,9 @@ type Finding struct {
 	Confidence string `json:"confidence,omitempty"`
 }
 
-// Assessment is what a Detector returns before the response is validated and a
-// decision is computed.
+// Assessment is what an analyzer returns before the evidence from every
+// analyzer is aggregated, the response is validated, and a decision is
+// computed.
 type Assessment struct {
 	Findings      []Finding
 	Model         string
@@ -120,7 +123,7 @@ type Assessment struct {
 	// spectral balance and onset-envelope statistics). Observations inform a
 	// human or model reviewer but never trigger a decision by themselves.
 	SignalObservations []SignalObservation
-	// DurationSeconds is optional metadata a Detector may report (for example,
+	// DurationSeconds is optional metadata an analyzer may report (for example,
 	// the model's estimate of the recording length). When the caller did not
 	// supply a duration, the pipeline uses this value for timestamp validation
 	// and the report.
@@ -142,9 +145,9 @@ type Report struct {
 	// balance, onset-envelope statistics). They are evidence, not verdicts:
 	// they never appear in Defects and never drive the decision on their own.
 	SignalObservations []SignalObservation `json:"signal_observations,omitempty"`
-	ShouldRegenerate         *bool     `json:"should_regenerate"`
-	Decision                 string    `json:"decision"`
-	Reason                   string    `json:"reason"`
+	ShouldRegenerate   *bool               `json:"should_regenerate"`
+	Decision           string              `json:"decision"`
+	Reason             string              `json:"reason"`
 
 	// Metadata describing the assessment.
 	AudioFilename   string    `json:"audio_filename,omitempty"`

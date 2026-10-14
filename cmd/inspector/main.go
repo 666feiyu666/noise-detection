@@ -1,8 +1,9 @@
 // Command inspector runs one audio-defect assessment.
 //
-// It validates input, runs a detector (local rule, DSP, Gemini, or a hybrid
-// DSP+Gemini fusion), validates the response, computes a decision, and emits a
-// JSON report to stdout or a file.
+// It follows the CRISP-DM flow: validate the input (data understanding), prepare
+// the signal features once (data preparation), run one or more models over them
+// (modeling), aggregate their evidence and decide (evaluation), and emit a JSON
+// report (deployment).
 package main
 
 import (
@@ -15,9 +16,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/666feiyu666/noise-detection/internal/detector"
-	"github.com/666feiyu666/noise-detection/internal/fusion"
-	"github.com/666feiyu666/noise-detection/internal/gemini"
+	"github.com/666feiyu666/noise-detection/internal/evaluation"
+	"github.com/666feiyu666/noise-detection/internal/model"
+	"github.com/666feiyu666/noise-detection/internal/model/llm"
 	"github.com/666feiyu666/noise-detection/internal/report"
 )
 
@@ -32,18 +33,19 @@ func run() error {
 	var (
 		requestIDs    stringList
 		audioPaths    stringList
+		detectorNames stringList
 		attempt       = flag.Int("generation-attempt", 1, "generation attempt, 1..3")
 		effects       = flag.String("intentional-effects", "", "optional description of deliberate effects")
 		reportPath    = flag.String("report", "", "optional JSON report destination for a single audio file")
 		reportsDir    = flag.String("reports-dir", "reports", "base directory for automatic per-run report directories")
-		rulesPath     = flag.String("rules", "", "optional path to a JSON rules file for the local rule detector")
-		detectorName  = flag.String("detector", "rule", "detector: rule (local), dsp (signal analysis), gemini (model-backed), or hybrid (dsp+gemini fusion)")
+		rulesPath     = flag.String("rules", "", "optional path to a JSON rules file for the local rule model")
 		geminiModel   = flag.String("gemini-model", "", "Gemini model id; overrides GEMINI_MODEL and the default")
 		skipFileCheck = flag.Bool("skip-file-check", false, "do not require the audio file to exist")
 		maxAttempts   = flag.Int("max-attempts", report.MaxGenerationAttempt, "generation limit")
 	)
 	flag.Var(&requestIDs, "request-id", "stable identifier for one candidate; repeat, once per -audio (required)")
 	flag.Var(&audioPaths, "audio", "path to a candidate MP3/WAV file; repeat to assess several candidates in one run (required)")
+	flag.Var(&detectorNames, "detector", "detection model: rule (local), dsp (signal), or llm (Gemini); repeat to run several (default rule)")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -61,14 +63,13 @@ func run() error {
 		return fmt.Errorf("-report names a single file; omit it when assessing several audio files")
 	}
 
-	primary, verifier, err := buildDetectors(ctx, *detectorName, *rulesPath, *geminiModel)
+	models, err := buildModels(ctx, detectorNames, *rulesPath, *geminiModel)
 	if err != nil {
 		return err
 	}
 
-	p := fusion.New(fusion.Config{
-		Detector:         primary,
-		Verifier:         verifier,
+	p := evaluation.New(evaluation.Config{
+		Models:           models,
 		MaxAttempts:      *maxAttempts,
 		RequireAudioFile: !*skipFileCheck,
 	})
@@ -175,30 +176,19 @@ func nextRunDir(base string) (string, error) {
 	return dir, nil
 }
 
-// buildDetectors selects the detector(s) named on the command line. The second
-// return value is the optional verifier used for hybrid fusion.
-func buildDetectors(ctx context.Context, name, rulesPath, geminiModel string) (detector.Detector, detector.Detector, error) {
-	switch name {
-	case "", "rule":
-		if rulesPath != "" {
-			d, err := detector.NewRuleDetectorFromFile(rulesPath)
-			return d, nil, err
-		}
-		return detector.NewRuleDetector(), nil, nil
-	case "dsp":
-		return detector.NewDSPDetector(detector.DSPConfig{}), nil, nil
-	case "gemini":
-		g, err := gemini.NewGeminiDetector(ctx, gemini.GeminiConfig{Model: geminiModel})
-		return g, nil, err
-	case "hybrid":
-		g, err := gemini.NewGeminiDetector(ctx, gemini.GeminiConfig{Model: geminiModel})
-		if err != nil {
-			return nil, nil, err
-		}
-		return detector.NewDSPDetector(detector.DSPConfig{}), g, nil
-	default:
-		return nil, nil, fmt.Errorf("unknown detector %q: use rule, dsp, gemini, or hybrid", name)
+// buildModels resolves the requested model names to models. When no name is
+// given, the local rule model is used. The registry ships the built-in models;
+// the LLM model is registered here because it needs the API key and model id.
+func buildModels(ctx context.Context, names []string, rulesPath, geminiModel string) ([]model.Model, error) {
+	reg := model.NewRegistry()
+	reg.Register("llm", func(ctx context.Context, _ model.Options) (model.Model, error) {
+		return llm.NewGemini(ctx, llm.Config{Model: geminiModel})
+	})
+
+	if len(names) == 0 {
+		names = []string{"rule"}
 	}
+	return reg.Build(ctx, names, model.Options{RulesPath: rulesPath})
 }
 
 func writeReport(r report.Report, path string) error {
