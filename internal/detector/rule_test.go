@@ -1,10 +1,10 @@
-package detect
+package detector
 
 import (
 	"context"
 	"testing"
 
-	"github.com/666feiyu666/noise-detection/internal/contract"
+	"github.com/666feiyu666/noise-detection/internal/report"
 )
 
 func TestRuleDetectorDetect(t *testing.T) {
@@ -21,7 +21,7 @@ func TestRuleDetectorDetect(t *testing.T) {
 	d := NewRuleDetector()
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := d.Detect(context.Background(), contract.Input{AudioPath: tc.audioPath})
+			got, err := d.Detect(context.Background(), report.Input{AudioPath: tc.audioPath})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}

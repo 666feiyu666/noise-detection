@@ -1,8 +1,8 @@
-// Package decide computes the assessment decision in application code, never
-// in a model.
-package decide
+// Decision computation for a completed assessment. Decisions are always
+// computed in application code, never in a model.
+package fusion
 
-import "github.com/666feiyu666/noise-detection/internal/contract"
+import "github.com/666feiyu666/noise-detection/internal/report"
 
 // Outcome is the decision computed for a completed assessment.
 type Outcome struct {
@@ -19,21 +19,21 @@ type Outcome struct {
 func Decide(hasDefect bool, attempt, maxAttempts int) Outcome {
 	if !hasDefect {
 		return Outcome{
-			Decision:         contract.DecisionAccept,
-			ShouldRegenerate: contract.Bool(false),
+			Decision:         report.DecisionAccept,
+			ShouldRegenerate: report.Bool(false),
 			Reason:           "No audible defect was detected.",
 		}
 	}
 	if attempt < maxAttempts {
 		return Outcome{
-			Decision:         contract.DecisionRegenerate,
-			ShouldRegenerate: contract.Bool(true),
+			Decision:         report.DecisionRegenerate,
+			ShouldRegenerate: report.Bool(true),
 			Reason:           "An audible defect was detected; another attempt is allowed.",
 		}
 	}
 	return Outcome{
-		Decision:         contract.DecisionStopLimitReached,
-		ShouldRegenerate: contract.Bool(false),
+		Decision:         report.DecisionStopLimitReached,
+		ShouldRegenerate: report.Bool(false),
 		Reason:           "An audible defect was detected and the generation limit has been reached.",
 	}
 }

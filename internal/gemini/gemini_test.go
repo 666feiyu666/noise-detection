@@ -1,7 +1,9 @@
-package detect
+package gemini
 
 import (
 	"testing"
+
+	"github.com/666feiyu666/noise-detection/internal/detector"
 )
 
 func TestAudioMIMEType(t *testing.T) {
@@ -61,5 +63,5 @@ func TestGeminiResultFindings(t *testing.T) {
 	}
 }
 
-// geminiDetector must satisfy the Detector interface.
-var _ Detector = (*GeminiDetector)(nil)
+// GeminiDetector must satisfy the detector.Detector interface.
+var _ detector.Detector = (*GeminiDetector)(nil)

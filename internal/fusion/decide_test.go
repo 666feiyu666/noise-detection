@@ -1,9 +1,9 @@
-package decide
+package fusion
 
 import (
 	"testing"
 
-	"github.com/666feiyu666/noise-detection/internal/contract"
+	"github.com/666feiyu666/noise-detection/internal/report"
 )
 
 func TestDecide(t *testing.T) {
@@ -15,10 +15,10 @@ func TestDecide(t *testing.T) {
 		wantDecision string
 		wantReGen    bool
 	}{
-		{"clean", false, 1, 3, contract.DecisionAccept, false},
-		{"defect at attempt 1", true, 1, 3, contract.DecisionRegenerate, true},
-		{"defect at attempt 2", true, 2, 3, contract.DecisionRegenerate, true},
-		{"defect at attempt 3", true, 3, 3, contract.DecisionStopLimitReached, false},
+		{"clean", false, 1, 3, report.DecisionAccept, false},
+		{"defect at attempt 1", true, 1, 3, report.DecisionRegenerate, true},
+		{"defect at attempt 2", true, 2, 3, report.DecisionRegenerate, true},
+		{"defect at attempt 3", true, 3, 3, report.DecisionStopLimitReached, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

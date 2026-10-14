@@ -25,8 +25,6 @@ AGENTS.md
 .DS_Store
 Thumbs.db
 
-# Testing sets
-testing-tracks
-
-# docs
-docs/*
+# Testing sets and Reports
+testing-tracks/*
+reports/*

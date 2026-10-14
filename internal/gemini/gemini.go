@@ -1,12 +1,12 @@
-// Gemini-backed Detector.
+// Package gemini implements a Gemini-backed Detector.
 //
 // This detector uploads the candidate recording through Google's Files API,
 // asks Gemini to inspect the whole recording for clearly audible, unintended
 // defects, and returns the model's structured findings. It implements the
-// detect.Detector interface so the pipeline is unchanged: decisions are still
+// detector.Detector interface so the pipeline is unchanged: decisions are still
 // computed in application code, and any API or parsing failure surfaces as an
 // error report rather than a clean result.
-package detect
+package gemini
 
 import (
 	"context"
@@ -20,7 +20,7 @@ import (
 
 	"google.golang.org/genai"
 
-	"github.com/666feiyu666/noise-detection/internal/contract"
+	"github.com/666feiyu666/noise-detection/internal/report"
 )
 
 // Environment variables the Gemini detector reads.
@@ -116,17 +116,20 @@ func NewGeminiDetector(ctx context.Context, cfg GeminiConfig) (*GeminiDetector, 
 // Name implements Detector.
 func (d *GeminiDetector) Name() string { return d.model }
 
+// Source implements detector.Sourced.
+func (d *GeminiDetector) Source() string { return report.SourceGemini }
+
 // Detect implements Detector by uploading the file, assessing it, and parsing
 // the structured response.
-func (d *GeminiDetector) Detect(ctx context.Context, in contract.Input) (contract.Assessment, error) {
+func (d *GeminiDetector) Detect(ctx context.Context, in report.Input) (report.Assessment, error) {
 	mimeType, err := audioMIMEType(in.AudioPath)
 	if err != nil {
-		return contract.Assessment{}, err
+		return report.Assessment{}, err
 	}
 
 	uploaded, err := d.upload(ctx, in.AudioPath, mimeType)
 	if err != nil {
-		return contract.Assessment{}, err
+		return report.Assessment{}, err
 	}
 	// Best-effort cleanup of the temporary remote upload, on every path.
 	defer func() {
@@ -134,17 +137,17 @@ func (d *GeminiDetector) Detect(ctx context.Context, in contract.Input) (contrac
 	}()
 
 	if err := d.waitActive(ctx, uploaded); err != nil {
-		return contract.Assessment{}, err
+		return report.Assessment{}, err
 	}
 
 	result, err := d.assess(ctx, uploaded, in)
 	if err != nil {
-		return contract.Assessment{}, err
+		return report.Assessment{}, err
 	}
 
 	findings, err := result.findings()
 	if err != nil {
-		return contract.Assessment{}, err
+		return report.Assessment{}, err
 	}
 
 	var duration *float64
@@ -152,7 +155,7 @@ func (d *GeminiDetector) Detect(ctx context.Context, in contract.Input) (contrac
 		duration = &result.DurationSeconds
 	}
 
-	return contract.Assessment{
+	return report.Assessment{
 		Findings:        findings,
 		Model:           d.model,
 		PromptVersion:   GeminiPromptVersion,
@@ -205,7 +208,7 @@ func (d *GeminiDetector) waitActive(ctx context.Context, file *genai.File) error
 
 // assess sends the complete recording with the assessment prompt and response
 // schema, and parses the model's structured output.
-func (d *GeminiDetector) assess(ctx context.Context, file *genai.File, in contract.Input) (geminiResult, error) {
+func (d *GeminiDetector) assess(ctx context.Context, file *genai.File, in report.Input) (geminiResult, error) {
 	var result geminiResult
 
 	err := d.withRetry(ctx, "generateContent", func() error {
@@ -280,16 +283,16 @@ type geminiFinding struct {
 
 // findings converts the model output to contract findings, rejecting the
 // inconsistent shapes the schema is meant to prevent.
-func (r geminiResult) findings() ([]contract.Finding, error) {
+func (r geminiResult) findings() ([]report.Finding, error) {
 	if r.HasDefect && len(r.Defects) == 0 {
 		return nil, errors.New("model reported has_defect=true but returned no defects")
 	}
 	if !r.HasDefect && len(r.Defects) > 0 {
 		return nil, errors.New("model reported has_defect=false but returned defects")
 	}
-	findings := make([]contract.Finding, 0, len(r.Defects))
+	findings := make([]report.Finding, 0, len(r.Defects))
 	for _, f := range r.Defects {
-		findings = append(findings, contract.Finding{
+		findings = append(findings, report.Finding{
 			StartSeconds: f.StartSeconds,
 			EndSeconds:   f.EndSeconds,
 			Type:         f.Type,
@@ -303,7 +306,7 @@ const systemInstruction = "You are an expert audio-quality inspector for generat
 	"You report only clearly audible, unintended defects and never comment on artistic intent."
 
 // buildPrompt assembles the assessment prompt for one candidate.
-func buildPrompt(in contract.Input) string {
+func buildPrompt(in report.Input) string {
 	var b strings.Builder
 	b.WriteString("Inspect the ENTIRE recording (the attached audio file) for clearly audible, unintended defects. ")
 	b.WriteString("Look specifically for: isolated clicks or pops, harsh digital noise, broken or corrupted sound, ")

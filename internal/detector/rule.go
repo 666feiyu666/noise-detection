@@ -1,4 +1,4 @@
-package detect
+package detector
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/666feiyu666/noise-detection/internal/contract"
+	"github.com/666feiyu666/noise-detection/internal/report"
 )
 
 // Rule is one local, filename-based heuristic.
@@ -96,21 +96,21 @@ func DefaultRules() []Rule {
 func (d *RuleDetector) Name() string { return RuleModel }
 
 // Detect implements Detector using filename heuristics only.
-func (d *RuleDetector) Detect(_ context.Context, in contract.Input) (contract.Assessment, error) {
+func (d *RuleDetector) Detect(_ context.Context, in report.Input) (report.Assessment, error) {
 	filename := strings.ToLower(filepath.Base(in.AudioPath))
-	findings := make([]contract.Finding, 0, len(d.Rules))
+	findings := make([]report.Finding, 0, len(d.Rules))
 	for _, r := range d.Rules {
 		if r.Match == "" || !strings.Contains(filename, strings.ToLower(r.Match)) {
 			continue
 		}
-		findings = append(findings, contract.Finding{
+		findings = append(findings, report.Finding{
 			StartSeconds: r.StartSeconds,
 			EndSeconds:   r.EndSeconds,
 			Type:         r.Type,
 			Description:  r.Description,
 		})
 	}
-	return contract.Assessment{
+	return report.Assessment{
 		Findings:      findings,
 		Model:         RuleModel,
 		PromptVersion: RulePromptVersion,

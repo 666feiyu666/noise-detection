@@ -1,9 +1,9 @@
-package validate
+package audio
 
 import (
 	"fmt"
 
-	"github.com/666feiyu666/noise-detection/internal/contract"
+	"github.com/666feiyu666/noise-detection/internal/report"
 )
 
 // Findings validates detector findings against the timestamp contract.
@@ -11,7 +11,7 @@ import (
 // Every interval must satisfy 0 <= start < end, and end must not exceed the
 // known duration when one is supplied. Inconsistent or incomplete findings are
 // rejected rather than silently treated as success.
-func Findings(findings []contract.Finding, duration *float64) error {
+func Findings(findings []report.Finding, duration *float64) error {
 	for i, f := range findings {
 		if f.Type == "" {
 			return fmt.Errorf("finding %d: type is required", i)

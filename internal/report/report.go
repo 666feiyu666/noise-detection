@@ -1,10 +1,11 @@
-// Package contract defines the input, output, and decision vocabulary shared
-// by every stage of the audio-defect assessment pipeline.
+// Package report defines the input, output, and decision vocabulary shared
+// by every stage of the audio-defect assessment pipeline, and the structured
+// report returned to the caller.
 //
 // The types here mirror the external contract of the workflow: a caller
 // supplies an Input, the pipeline produces a Report, and application code
 // (never a model) computes the Decision.
-package contract
+package report
 
 import "time"
 
@@ -45,13 +46,33 @@ type Input struct {
 	DurationSeconds *float64
 }
 
+// Source labels for fused findings.
+const (
+	SourceDSP    = "dsp"
+	SourceGemini = "gemini"
+	SourceBoth   = "both"
+)
+
+// Status values for fused findings.
+const (
+	StatusConfirmed   = "confirmed"   // DSP and Gemini agree
+	StatusUnconfirmed = "unconfirmed" // DSP candidate with no Gemini support
+	StatusSuspected   = "suspected"   // Gemini-only perceptual defect
+)
+
 // Finding is one located, audible defect. Times are seconds from the start of
 // the original file and are estimates, not sample-accurate measurements.
+//
+// Source and Status are set when findings are fused: source is "dsp", "gemini",
+// or "both"; status is "confirmed", "unconfirmed", or "suspected". They are
+// empty for a single detector's raw output.
 type Finding struct {
 	StartSeconds float64 `json:"start_seconds"`
 	EndSeconds   float64 `json:"end_seconds"`
 	Type         string  `json:"type"`
 	Description  string  `json:"description"`
+	Source       string  `json:"source,omitempty"`
+	Status       string  `json:"status,omitempty"`
 }
 
 // Assessment is what a Detector returns before the response is validated and a

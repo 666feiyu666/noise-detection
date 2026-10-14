@@ -1,13 +1,13 @@
-// Package validate checks the caller request and detector response before they
+// Package audio validates the caller request and detector response before they
 // flow onward. Validation failures must surface as errors, never as a clean
 // result.
-package validate
+package audio
 
 import (
 	"fmt"
 	"os"
 
-	"github.com/666feiyu666/noise-detection/internal/contract"
+	"github.com/666feiyu666/noise-detection/internal/report"
 )
 
 // InputOptions controls input validation.
@@ -18,13 +18,13 @@ type InputOptions struct {
 }
 
 // Input validates the caller request. It does not read or decode audio.
-func Input(in contract.Input, opts InputOptions) error {
+func Input(in report.Input, opts InputOptions) error {
 	if in.RequestID == "" {
 		return fmt.Errorf("request_id is required")
 	}
-	if in.GenerationAttempt < contract.MinGenerationAttempt || in.GenerationAttempt > contract.MaxGenerationAttempt {
+	if in.GenerationAttempt < report.MinGenerationAttempt || in.GenerationAttempt > report.MaxGenerationAttempt {
 		return fmt.Errorf("generation_attempt must be between %d and %d, got %d",
-			contract.MinGenerationAttempt, contract.MaxGenerationAttempt, in.GenerationAttempt)
+			report.MinGenerationAttempt, report.MaxGenerationAttempt, in.GenerationAttempt)
 	}
 	if in.AudioPath == "" {
 		return fmt.Errorf("audio_path is required")

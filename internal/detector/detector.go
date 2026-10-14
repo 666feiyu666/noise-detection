@@ -1,15 +1,15 @@
-// Package detect defines the pluggable audio-defect detector contract.
+// Package detector defines the pluggable audio-defect detector contract.
 //
 // A Detector inspects one candidate recording and returns the defects it
 // believes are present. The initial framework ships with a purely local rule
-// detector; a future model-backed detector (for example Gemini) only needs to
-// implement this interface, without changing the pipeline.
-package detect
+// detector; a model-backed detector (for example the gemini package) only needs
+// to implement this interface, without changing the pipeline.
+package detector
 
 import (
 	"context"
 
-	"github.com/666feiyu666/noise-detection/internal/contract"
+	"github.com/666feiyu666/noise-detection/internal/report"
 )
 
 // Detector inspects one candidate and reports its findings.
@@ -21,5 +21,11 @@ type Detector interface {
 	// Name identifies the detector in reports.
 	Name() string
 	// Detect assesses the candidate described by in.
-	Detect(ctx context.Context, in contract.Input) (contract.Assessment, error)
+	Detect(ctx context.Context, in report.Input) (report.Assessment, error)
+}
+
+// Sourced detectors report the family their findings come from (report.SourceDSP
+// or report.SourceGemini) so fusion can label evidence by origin.
+type Sourced interface {
+	Source() string
 }
